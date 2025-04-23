@@ -1,6 +1,13 @@
 const axios = require("axios");
 const BASE_URL = process.env.BASE_URL;
 
+// Add this check early
+if (!BASE_URL) {
+    console.error("FATAL ERROR: BASE_URL environment variable is not defined.");
+    // Optionally, you could prevent the app from starting fully,
+    // but for now, logging is essential.
+}
+
 // --- List of potential User-Agent strings ---
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
