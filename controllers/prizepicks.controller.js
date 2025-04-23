@@ -1,48 +1,92 @@
 const axios = require("axios");
 const BASE_URL = process.env.BASE_URL;
 
-// --- Helper function to get proxy configuration (Example) ---
-const getProxyConfig = () => {
-  const proxyHost = process.env.PROXY_HOST;
-  const proxyPort = process.env.PROXY_PORT;
-  const proxyUsername = process.env.PROXY_USERNAME;
-  const proxyPassword = process.env.PROXY_PASSWORD;
+// --- List of potential User-Agent strings ---
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Linux; Android 13; SM-G991U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Mobile Safari/537.36'
+];
 
-  if (!proxyHost || !proxyPort) {
-    return null;
-  }
-  const config = {
-    host: proxyHost,
-    port: parseInt(proxyPort, 10),
-  };
-  if (proxyUsername && proxyPassword) {
-    config.auth = { username: proxyUsername, password: proxyPassword };
-  }
-  return config;
+// --- Helper function to get proxy configuration (Enhanced for Rotation) ---
+// This is a conceptual example assuming proxies are listed in an env var
+// e.g., PROXY_LIST="http://user1:pass1@host1:port1,http://user2:pass2@host2:port2"
+// A real implementation might involve a proxy management service API.
+let proxyList = [];
+let currentProxyIndex = 0;
+
+const loadProxies = () => {
+    if (proxyList.length === 0 && process.env.PROXY_LIST) {
+        proxyList = process.env.PROXY_LIST.split(',').map(p => p.trim()).filter(p => p);
+        console.log(`Loaded ${proxyList.length} proxies.`);
+    }
 };
 
-// --- Function to create common request options ---
+loadProxies(); // Load proxies when the module initializes
+
+const getRotatingProxyConfig = () => {
+    if (proxyList.length === 0) {
+        return null; // No proxies configured or loaded
+    }
+
+    const proxyUrlString = proxyList[currentProxyIndex];
+    currentProxyIndex = (currentProxyIndex + 1) % proxyList.length; // Rotate index
+
+    try {
+        const proxyUrl = new URL(proxyUrlString);
+        const config = {
+            protocol: proxyUrl.protocol.replace(':', ''), // http or https
+            host: proxyUrl.hostname,
+            port: parseInt(proxyUrl.port, 10),
+        };
+        if (proxyUrl.username && proxyUrl.password) {
+            config.auth = {
+                username: decodeURIComponent(proxyUrl.username),
+                password: decodeURIComponent(proxyUrl.password),
+            };
+        }
+        // console.log(`Using proxy: ${config.host}:${config.port}`); // Optional: for debugging
+        return config;
+    } catch (e) {
+        console.error(`Error parsing proxy URL: ${proxyUrlString}`, e);
+        return null; // Skip invalid proxy URL
+    }
+};
+
+
+// --- Function to create common request options (Updated) ---
 const createRequestOptions = () => {
-  const proxy = getProxyConfig();
+  // Select a random User-Agent
+  const randomUserAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  // Get a rotating proxy
+  const proxy = getRotatingProxyConfig(); // Use the rotating proxy function
+
   return {
     headers: {
       // Standard Headers
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br', // Added encoding
-      'Connection': 'keep-alive', // Added connection type
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36', // Updated UA slightly
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'User-Agent': randomUserAgent, // Use the randomly selected User-Agent
 
       // Common Security/Hint Headers (Optional, might help)
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-origin', // Adjust if fetching cross-origin
-      'Sec-Ch-Ua': '"Not?A_Brand";v="8", "Chromium";v="108", "Google Chrome";v="108"',
-      'Sec-Ch-Ua-Mobile': '?0',
-      'Sec-Ch-Ua-Platform': '"macOS"', // Or "Windows" etc.
+      'Sec-Fetch-Site': 'same-origin',
+      // Note: Sec-Ch-Ua headers should ideally match the chosen User-Agent,
+      // which adds significant complexity. For simplicity, we might omit them
+      // or use a fixed generic set, but this is less convincing.
+      // 'Sec-Ch-Ua': '"Not?A_Brand";v="8", "Chromium";v="108", "Google Chrome";v="108"',
+      // 'Sec-Ch-Ua-Mobile': '?0',
+      // 'Sec-Ch-Ua-Platform': '"Windows"', // Should match UA
     },
-    ...(proxy && { proxy: proxy }), // Conditionally add proxy
-    timeout: 15000 // Add a timeout (e.g., 15 seconds)
+    ...(proxy && { proxy: proxy }), // Conditionally add the rotating proxy
+    timeout: 20000 // Increased timeout slightly for potentially slower proxies
   };
 };
 
