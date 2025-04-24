@@ -19,10 +19,6 @@ const USER_AGENTS = [
     'Mozilla/5.0 (Linux; Android 13; SM-G991U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Mobile Safari/537.36'
 ];
 
-// --- Helper function to get proxy configuration (Enhanced for Rotation) ---
-// This is a conceptual example assuming proxies are listed in an env var
-// e.g., PROXY_LIST="http://user1:pass1@host1:port1,http://user2:pass2@host2:port2"
-// A real implementation might involve a proxy management service API.
 let proxyList = [];
 let currentProxyIndex = 0;
 
@@ -102,9 +98,23 @@ const getLeagues = async (req, res) => {
   const options = createRequestOptions();
   try {
     const response = await axios.get(`${BASE_URL}/leagues`, options);
-    const leagueData = response.data;
-    console.log(leagueData);
-    res.json(leagueData);
+    // Extract array from JSON API-format response
+    const leaguesData = response.data.data || [];
+    // Keep only active leagues
+    const activeLeaguesRaw = Array.isArray(leaguesData) ? leaguesData : [];
+    const filteredLeagues = activeLeaguesRaw.filter(({ attributes }) => attributes.active);
+    // Restructure into a cleaner shape
+    const structuredLeagues = filteredLeagues.map(({ id, attributes }) => {
+      const { name, icon, image_url, projections_count } = attributes;
+      return {
+        id,
+        name,
+        icon,
+        imageUrl: image_url,
+        projectionsCount: projections_count
+      };
+    });
+    return res.json({ leagues: structuredLeagues });
   } catch (error) {
     console.error("Error fetching leagues:", error.message);
     // Provide more specific status code if available from error
@@ -114,15 +124,61 @@ const getLeagues = async (req, res) => {
 };
 
 const getProjections = async (req, res) => {
-  const options = createRequestOptions(); // Use the helper function
+  const options = createRequestOptions();
   try {
-    // Append the new query parameter
     const response = await axios.get(
       `${BASE_URL}/projections?per_page=100&include_new_player_attributes=True`,
       options
     );
-    const projectionData = response.data;
-    res.json(projectionData);
+    const projectionsRaw = response.data.data || [];
+    const included = response.data.included || [];
+    const filteredProjections = projectionsRaw.map(({ type, id, attributes, relationships }) => {
+      const {
+        board_time,
+        description: opponent,
+        game_id,
+        line_score,
+        odds_type,
+        projection_type,
+        start_time,
+        stat_display_name,
+        stat_type,
+        status,
+        today
+      } = attributes;
+      const { projection_type: projectionTypeRel, score, stat_type: statTypeRel } = relationships;
+      const newPlayerRel = relationships.new_player?.data;
+      const newPlayerRaw = included.find(item => item.type === 'new_player' && item.id === newPlayerRel?.id);
+      const mappedNewPlayer = newPlayerRaw ? (() => {
+        const { market, ...otherAttrs } = newPlayerRaw.attributes;
+        return {
+          type: newPlayerRaw.type,
+          id: newPlayerRaw.id,
+          attributes: { ...otherAttrs, Team: market }
+        };
+      })() : null;
+      return {
+        type,
+        id,
+        attributes: {
+          board_time,
+          opponent,
+          game_id,
+          line_score,
+          odds_type,
+          projection_type,
+          start_time,
+          stat_display_name,
+          stat_type,
+          status,
+          today
+        },
+        relationships: {
+          new_player: mappedNewPlayer
+        }
+      };
+    });
+    return res.json({ projections: filteredProjections });
   } catch (error) {
     console.error("Error fetching projections:", error.message);
     // Provide more specific status code if available from error
@@ -153,11 +209,45 @@ const getLeagueProjections = async (req, res) => {
   try {
     // Append the new query parameter
     const response = await axios.get(
-      `${BASE_URL}/projections?league_id=${leagueId}&include_new_player_attributes=True`, // Use leagueId and add new param
+      `${BASE_URL}/projections?league_id=${leagueId}`, // Use leagueId and add new param
       options
     );
-    const projectionData = response.data;
-    res.json(projectionData);
+    // Extract and map only the needed fields
+    const projectionsRaw = response.data.data || [];
+    const included = response.data.included || [];
+    const filteredProjections = projectionsRaw.map(({ type, id, attributes, relationships }) => {
+      const {
+        board_time,
+        description: opponent,
+        game_id,
+        line_score,
+        odds_type,
+        projection_type,
+        start_time,
+        stat_display_name,
+        stat_type,
+        status,
+        today
+      } = attributes;
+      const { projection_type: projectionTypeRel, score, stat_type: statTypeRel } = relationships;
+      const newPlayerRel = relationships.new_player?.data;
+      const newPlayerRaw = included.find(item => item.type === 'new_player' && item.id === newPlayerRel?.id);
+      const mappedNewPlayer = newPlayerRaw ? (() => {
+        const { market, ...otherAttrs } = newPlayerRaw.attributes;
+        return {
+          type: newPlayerRaw.type,
+          id: newPlayerRaw.id,
+          attributes: { ...otherAttrs, Team: market }
+        };
+      })() : null;
+      return {
+        type,
+        id,
+        attributes: { board_time, opponent, game_id, line_score, odds_type, projection_type, start_time, stat_display_name, stat_type, status, today },
+        relationships: { new_player: mappedNewPlayer }
+      };
+    });
+    return res.json({ projections: filteredProjections });
   } catch (error) {
     console.error(`Error fetching projections for league ${leagueId}:`, error.message);
     const statusCode = error.response?.status || 500;
