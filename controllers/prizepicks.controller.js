@@ -1,4 +1,4 @@
-const axios = require("axios");
+const { smartGet } = require("../utils/request-utils");
 const BASE_URL = process.env.BASE_URL;
 
 // Add this check early
@@ -8,17 +8,8 @@ if (!BASE_URL) {
     // but for now, logging is essential.
 }
 
-// --- List of potential User-Agent strings ---
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (Linux; Android 13; SM-G991U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Mobile Safari/537.36'
-];
-
+// We're no longer managing User-Agents here as that's handled by the request utils
+// We keep the proxy list functionality for backward compatibility
 let proxyList = [];
 let currentProxyIndex = 0;
 
@@ -61,35 +52,20 @@ const getRotatingProxyConfig = () => {
 };
 
 
-// --- Function to create common request options (Updated) ---
+// --- Function to create common request options (Simplified) ---
 const createRequestOptions = () => {
-  // Select a random User-Agent
-  const randomUserAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-  // Get a rotating proxy
-  const proxy = getRotatingProxyConfig(); // Use the rotating proxy function
-
+  // No need to select User-Agents here as the request utils handle that
+  // We still set up the proxy for backward compatibility
+  const proxy = getRotatingProxyConfig(); 
+  
+  // We return minimal options here as most browser fingerprinting
+  // is now handled by the request utility
   return {
+    // Any additional headers that should override the generated ones
     headers: {
-      // Standard Headers
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'User-Agent': randomUserAgent, // Use the randomly selected User-Agent
-
-      // Common Security/Hint Headers (Optional, might help)
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-origin',
-      // Note: Sec-Ch-Ua headers should ideally match the chosen User-Agent,
-      // which adds significant complexity. For simplicity, we might omit them
-      // or use a fixed generic set, but this is less convincing.
-      // 'Sec-Ch-Ua': '"Not?A_Brand";v="8", "Chromium";v="108", "Google Chrome";v="108"',
-      // 'Sec-Ch-Ua-Mobile': '?0',
-      // 'Sec-Ch-Ua-Platform': '"Windows"', // Should match UA
+      // App-specific headers if needed
     },
-    ...(proxy && { proxy: proxy }), // Conditionally add the rotating proxy
-    timeout: 20000 // Increased timeout slightly for potentially slower proxies
+    ...(proxy && { proxy: proxy }) // Conditionally add the rotating proxy
   };
 };
 
@@ -97,9 +73,12 @@ const createRequestOptions = () => {
 const getLeagues = async (req, res) => {
   const options = createRequestOptions();
   try {
-    const response = await axios.get(`${BASE_URL}/leagues`, options);
+    const fullUrl = `${BASE_URL}/leagues`;
+    // Always rotate identity for this endpoint to avoid rate limiting
+    const data = await smartGet(fullUrl, options, true, undefined, true);
+    
     // Extract array from JSON API-format response
-    const leaguesData = response.data.data || [];
+    const leaguesData = data.data || [];
     // Keep only active leagues
     const activeLeaguesRaw = Array.isArray(leaguesData) ? leaguesData : [];
     const filteredLeagues = activeLeaguesRaw.filter(({ attributes }) => attributes.active);
@@ -126,12 +105,12 @@ const getLeagues = async (req, res) => {
 const getProjections = async (req, res) => {
   const options = createRequestOptions();
   try {
-    const response = await axios.get(
-      `${BASE_URL}/projections?per_page=100&include_new_player_attributes=True`,
-      options
-    );
-    const projectionsRaw = response.data.data || [];
-    const included = response.data.included || [];
+    const fullUrl = `${BASE_URL}/projections?per_page=100&include_new_player_attributes=True`;
+    // Set shorter cache time and always rotate identity for this endpoint
+    const data = await smartGet(fullUrl, options, true, 60 * 1000, true); // 1 min cache
+    
+    const projectionsRaw = data.data || [];
+    const included = data.included || [];
     const filteredProjections = projectionsRaw.map(({ type, id, attributes, relationships }) => {
       const {
         board_time,
@@ -181,9 +160,7 @@ const getProjections = async (req, res) => {
     return res.json({ projections: filteredProjections });
   } catch (error) {
     console.error("Error fetching projections:", error.message);
-    // Provide more specific status code if available from error
     const statusCode = error.response?.status || 500;
-    // Specifically log the 429 error if it occurs
     if (statusCode === 429) {
         console.warn("Rate limit (429) encountered when fetching projections.");
     }
@@ -199,22 +176,15 @@ const getLeagueProjections = async (req, res) => {
   if (!leagueId) {
     return res.status(400).json({ message: "League ID parameter is required." });
   }
-  // Optional: Check if it's a valid number format if needed
-  // if (isNaN(parseInt(leagueId))) {
-  //   return res.status(400).json({ message: "League ID must be a number." });
-  // }
 
-
-  const options = createRequestOptions(); // Use the helper function
+  const options = createRequestOptions(); 
   try {
-    // Append the new query parameter
-    const response = await axios.get(
-      `${BASE_URL}/projections?league_id=${leagueId}`, // Use leagueId and add new param
-      options
-    );
-    // Extract and map only the needed fields
-    const projectionsRaw = response.data.data || [];
-    const included = response.data.included || [];
+    // Use the smartGet function with the full URL and force identity rotation
+    const fullUrl = `${BASE_URL}/projections?league_id=${leagueId}`;
+    const data = await smartGet(fullUrl, options, true, 60 * 1000, true); // 1 min cache
+    
+    const projectionsRaw = data.data || [];
+    const included = data.included || [];
     const filteredProjections = projectionsRaw.map(({ type, id, attributes, relationships }) => {
       const {
         board_time,
