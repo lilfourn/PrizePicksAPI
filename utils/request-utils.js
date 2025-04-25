@@ -4,11 +4,6 @@
  */
 
 const axios = require('axios');
-const BASE_URL = process.env.BASE_URL;
-
-// Cache configuration
-const DEFAULT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
-const cache = new Map();
 
 // Rate limiting configuration - Randomized to appear more natural
 const MIN_REQUEST_DELAY = 300; // Minimum delay between requests (ms)
@@ -191,29 +186,54 @@ const getNextProxy = () => {
   }
 };
 
+// --- Identity Profiles ---
+const IDENTITY_PROFILES = {
+  desktop: {
+    userAgents: USER_AGENTS.filter(ua => !ua.includes('Mobile') && !ua.includes('Android') && !ua.includes('iPhone')),
+    screenResolutions: SCREEN_RESOLUTIONS.filter(r => parseInt(r.split('x')[0]) >= 850),
+    viewportSizes: VIEWPORT_SIZES.filter(v => v.width >= 850),
+  },
+  mobile: {
+    userAgents: USER_AGENTS.filter(ua => ua.includes('Mobile') || ua.includes('Android') || ua.includes('iPhone')),
+    screenResolutions: SCREEN_RESOLUTIONS.filter(r => parseInt(r.split('x')[0]) < 850),
+    viewportSizes: VIEWPORT_SIZES.filter(v => v.width < 850),
+  },
+  tablet: {
+    userAgents: USER_AGENTS.filter(ua => ua.includes('iPad') || ua.includes('Tablet')),
+    screenResolutions: SCREEN_RESOLUTIONS.filter(r => parseInt(r.split('x')[0]) >= 768 && parseInt(r.split('x')[0]) < 1200),
+    viewportSizes: VIEWPORT_SIZES.filter(v => v.width >= 768 && v.width < 1200),
+  }
+};
+
+// --- Cookie Rotation ---
+const COOKIE_SETS = [
+  // Example cookie sets (replace with real or more plausible cookies as needed)
+  'sessionid=abc123; _ga=GA1.2.123456789.1234567890; theme=light',
+  'sessionid=def456; _ga=GA1.2.987654321.0987654321; theme=dark',
+  'sessionid=xyz789; _ga=GA1.2.111111111.2222222222; theme=light',
+  // Add more realistic cookies if available
+];
+
+function getRandomCookie() {
+  return getRandomItem(COOKIE_SETS);
+}
+
 /**
- * Generates a realistic browser fingerprint to disguise requests
+ * Generates a realistic browser fingerprint to disguise requests, with identity profile and cookie rotation
+ * @param {string} [profileType] - 'desktop' | 'mobile' | 'tablet' | undefined (random)
  * @returns {Object} - Headers and other request options to mimic a real browser
  */
-const generateBrowserFingerprint = () => {
-  // Select a random User-Agent
-  const userAgent = getRandomItem(USER_AGENTS);
-  
-  // Determine if we're pretending to be mobile based on the UA
+function generateBrowserFingerprint(profileType) {
+  // Pick a random profile if not specified
+  const profileKeys = Object.keys(IDENTITY_PROFILES);
+  const profile = IDENTITY_PROFILES[profileType] || IDENTITY_PROFILES[getRandomItem(profileKeys)];
+
+  const userAgent = getRandomItem(profile.userAgents);
   const isMobile = userAgent.includes('Mobile') || userAgent.includes('Android');
-  
-  // Select appropriate viewport and screen resolution based on device type
-  const viewport = getRandomItem(isMobile ? 
-    VIEWPORT_SIZES.filter(v => v.width < 850) : 
-    VIEWPORT_SIZES.filter(v => v.width >= 850)
-  );
-  
-  const screenResolution = getRandomItem(isMobile ? 
-    SCREEN_RESOLUTIONS.filter(r => parseInt(r.split('x')[0]) < 850) : 
-    SCREEN_RESOLUTIONS.filter(r => parseInt(r.split('x')[0]) >= 850)
-  );
-  
-  // Generate platform info based on UA
+  const viewport = getRandomItem(profile.viewportSizes);
+  const screenResolution = getRandomItem(profile.screenResolutions);
+
+  // Platform detection
   let platform = 'Windows';
   if (userAgent.includes('Macintosh') || userAgent.includes('Mac OS X')) {
     platform = 'macOS';
@@ -224,8 +244,8 @@ const generateBrowserFingerprint = () => {
   } else if (userAgent.includes('iPhone') || userAgent.includes('iPad')) {
     platform = 'iOS';
   }
-  
-  // Common headers for all browsers
+
+  // --- Headers ---
   const headers = {
     'User-Agent': userAgent,
     'Accept': 'application/json, text/plain, */*',
@@ -239,12 +259,14 @@ const generateBrowserFingerprint = () => {
     'Cache-Control': 'no-cache',
     'sec-ch-ua-platform': `"${platform}"`,
     'sec-ch-ua-mobile': isMobile ? '?1' : '?0',
-    'Sec-CH-UA': '"Chromium";v="112", "Google Chrome";v="112"', // Simplified for now
+    'Sec-CH-UA': '"Chromium";v="112", "Google Chrome";v="112"',
     'Referer': 'https://app.prizepicks.com/',
-    'Origin': 'https://app.prizepicks.com'
+    'Origin': 'https://app.prizepicks.com',
+    'x-screen-size': screenResolution,
+    // --- Cookie Rotation ---
+    'Cookie': getRandomCookie(),
   };
-  
-  // Browser-specific client hints
+  // ...existing code for sec-ch-ua...
   if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
     headers['sec-ch-ua'] = `"Google Chrome";v="${getRandomNumber(110, 120)}", "Chromium";v="${getRandomNumber(110, 120)}"`;
   } else if (userAgent.includes('Firefox')) {
@@ -254,161 +276,63 @@ const generateBrowserFingerprint = () => {
   } else if (userAgent.includes('Edg')) {
     headers['sec-ch-ua'] = `"Microsoft Edge";v="${getRandomNumber(110, 120)}", "Chromium";v="${getRandomNumber(110, 120)}"`;
   }
-  
-  // Build the fingerprint object
+
   return {
     headers,
-    // Return proxy configuration if available
     proxy: getNextProxy()
   };
-};
+}
 
 /**
- * Gets data from cache if available and not expired
- * @param {string} key - Cache key
- * @returns {Object|null} - Cached data or null if not found/expired
- */
-const getFromCache = (key) => {
-  if (!cache.has(key)) return null;
-  
-  const { data, timestamp } = cache.get(key);
-  const now = Date.now();
-  
-  // Check if cache is still valid
-  if (now - timestamp < DEFAULT_CACHE_TTL) {
-    console.log(`Cache hit for: ${key}`);
-    return data;
-  }
-  
-  // Cache expired, remove it
-  console.log(`Cache expired for: ${key}`);
-  cache.delete(key);
-  return null;
-};
-
-/**
- * Saves data to cache with current timestamp
- * @param {string} key - Cache key
- * @param {Object} data - Data to cache
- * @param {number} [ttl] - Optional custom TTL in milliseconds
- */
-const saveToCache = (key, data, ttl = DEFAULT_CACHE_TTL) => {
-  cache.set(key, {
-    data,
-    timestamp: Date.now(),
-    ttl
-  });
-  console.log(`Cached data for: ${key}`);
-};
-
-/**
- * Enhanced HTTP GET function with caching, throttling, and identity rotation
+ * Enhanced HTTP GET function with throttling and identity rotation (no caching)
  * @param {string} url - Full URL to request
  * @param {Object} options - Request options
- * @param {boolean} [useCache=true] - Whether to use cache
- * @param {number} [cacheTtl] - Optional custom cache TTL
  * @param {boolean} [rotateIdentity=true] - Whether to generate a new browser fingerprint
+ * @param {string} [profileType] - 'desktop' | 'mobile' | 'tablet' | undefined (random)
  * @returns {Promise<Object>} - Response data
  */
-const smartGet = async (url, options = {}, useCache = true, cacheTtl, rotateIdentity = true) => {
-  // Generate a unique cache key based on URL and provided options
-  const cacheKey = `${url}-${JSON.stringify(options)}`;
-  
-  // Try to get from cache if enabled
-  if (useCache) {
-    const cachedData = getFromCache(cacheKey);
-    if (cachedData) return cachedData;
-  }
-  
+const smartGet = async (url, options = {}, rotateIdentity = true, profileType) => {
   // Apply throttling to make requests appear more human-like
   await throttle();
-  
+
   // Apply identity rotation if requested
   let requestOptions = { ...options };
   if (rotateIdentity) {
-    const fingerprint = generateBrowserFingerprint();
-    
+    const fingerprint = generateBrowserFingerprint(profileType);
     // Merge headers, giving precedence to custom headers from options
     requestOptions.headers = {
       ...fingerprint.headers,
       ...(options.headers || {})
     };
-    
-    // Add proxy if provided by fingerprint
-    if (fingerprint.proxy) {
-      requestOptions.proxy = fingerprint.proxy;
-    }
   }
-  
+
   try {
     // Make the request
     console.log(`Making request to ${url} with rotated identity`);
     const response = await axiosInstance.get(url, requestOptions);
-    
-    // Handle empty array responses
-    if (response.status === 200 && 
-        Array.isArray(response.data?.data) && 
-        response.data.data.length === 0) {
-      console.warn('Received empty array response, might be rate-limited or blocked');
-    }
-    
-    // Cache the successful response if enabled
-    if (useCache && response.status === 200) {
-      saveToCache(cacheKey, response.data, cacheTtl);
-    }
-    
     return response.data;
   } catch (error) {
     // Enhance error handling
     console.error(`Request failed for ${url}:`, 
       error.response?.status || error.code || error.message);
-    
     // Retry logic for certain errors
     if (error.response?.status === 429 || 
         error.code === 'ECONNRESET' || 
         error.code === 'ETIMEDOUT') {
-      
       // Wait longer before retrying
       const retryDelay = getRandomNumber(2000, 5000);
       console.log(`Rate limited or connection issue, retrying after ${retryDelay}ms...`);
       await sleep(retryDelay);
-      
       // Force new identity on retry
-      return smartGet(url, options, useCache, cacheTtl, true);
+      return smartGet(url, options, true, profileType);
     }
-    
     throw error;
   }
 };
-
-/**
- * Clears expired items from cache
- */
-const cleanupCache = () => {
-  const now = Date.now();
-  let expiredCount = 0;
-  
-  for (const [key, { timestamp, ttl }] of cache.entries()) {
-    if (now - timestamp > (ttl || DEFAULT_CACHE_TTL)) {
-      cache.delete(key);
-      expiredCount++;
-    }
-  }
-  
-  if (expiredCount > 0) {
-    console.log(`Cleaned up ${expiredCount} expired cache items`);
-  }
-};
-
-// Run cache cleanup every 10 minutes
-setInterval(cleanupCache, 10 * 60 * 1000);
 
 module.exports = {
   axiosInstance,
   smartGet,
   throttle,
-  getFromCache,
-  saveToCache,
-  cleanupCache,
   generateBrowserFingerprint
 };
